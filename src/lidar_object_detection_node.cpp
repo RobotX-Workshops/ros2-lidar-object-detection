@@ -23,7 +23,7 @@ using namespace std::chrono_literals;
 class LidarObjectDetectionNode : public rclcpp::Node
 {
 public:
-    LidarObjectDetectionNode() : Node("lidar_object_detection_node"), next_object_id_(0)
+    LidarObjectDetectionNode() : Node("lidar_object_detection_node", rclcpp::NodeOptions().enable_logger_service(true)), next_object_id_(0)
     {
         // --- Parameters ---
         this->declare_parameter<double>("max_object_width_m");

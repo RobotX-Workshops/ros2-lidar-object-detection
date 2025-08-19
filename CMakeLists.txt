@@ -16,6 +16,18 @@ find_package(tf2_geometry_msgs REQUIRED)
 
 add_executable(lidar_object_detection_node src/lidar_object_detection_node.cpp)
 
+# For messages
+find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/DetectedObject.msg"
+  "msg/DetectedObjectArray.msg"
+  DEPENDENCIES geometry_msgs std_msgs
+)
+
+
 # Add the include directory for this package
 target_include_directories(lidar_object_detection_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
