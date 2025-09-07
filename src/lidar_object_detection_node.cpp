@@ -38,7 +38,7 @@ public:
 
         // Set up parameter callback for runtime updates
         param_callback_handle_ = this->add_on_set_parameters_callback(
-            [this](const std::vector<rclcpp::Parameter> &params) -> rcl_interfaces::msg::SetParametersResult
+            [this](const std::vector<rclcpp::Parameter> &) -> rcl_interfaces::msg::SetParametersResult
             {
                 rcl_interfaces::msg::SetParametersResult result;
                 result.successful = true;
