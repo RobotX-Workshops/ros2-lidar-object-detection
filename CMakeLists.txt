@@ -10,16 +10,14 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
-find_package(detected_objects_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
-
-add_executable(lidar_object_detection_node src/lidar_object_detection_node.cpp)
 
 # For messages
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/DetectedObject.msg"
@@ -27,10 +25,18 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES geometry_msgs std_msgs
 )
 
+add_executable(lidar_object_detection_node src/lidar_object_detection_node.cpp)
+
+# Ensure the node is built after the messages are generated
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+add_dependencies(lidar_object_detection_node ${PROJECT_NAME}__rosidl_generator_cpp)
+target_link_libraries(lidar_object_detection_node ${cpp_typesupport_target})
+
 
 # Add the include directory for this package
 target_include_directories(lidar_object_detection_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp>
   $<INSTALL_INTERFACE:include>
 )
 
@@ -38,7 +44,6 @@ ament_target_dependencies(lidar_object_detection_node
   rclcpp
   sensor_msgs
   visualization_msgs
-  detected_objects_msgs
   tf2_ros
   tf2_geometry_msgs
 )
@@ -66,4 +71,5 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

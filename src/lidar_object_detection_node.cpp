@@ -10,8 +10,8 @@
 #include "visualization_msgs/msg/marker.hpp"
 #include "tf2/utils.h"
 #include "lidar_object_detection/tracked_object.hpp"
-#include "detected_objects_msgs/msg/detected_object.hpp"
-#include "detected_objects_msgs/msg/detected_object_array.hpp"
+#include "lidar_object_detection/msg/detected_object.hpp"
+#include "lidar_object_detection/msg/detected_object_array.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 #ifndef M_PI
@@ -59,7 +59,7 @@ public:
         update_config();
 
         // --- Publishers ---
-        objects_pub_ = this->create_publisher<detected_objects_msgs::msg::DetectedObjectArray>("detected_objects", 10);
+        objects_pub_ = this->create_publisher<lidar_object_detection::msg::DetectedObjectArray>("detected_objects", 10);
         marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("objects/visualization_markers", 10);
         fov_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("objects/fov_marker", 10);
 
@@ -81,7 +81,7 @@ private:
 
     // --- Member Variables ---
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
-    rclcpp::Publisher<detected_objects_msgs::msg::DetectedObjectArray>::SharedPtr objects_pub_;
+    rclcpp::Publisher<lidar_object_detection::msg::DetectedObjectArray>::SharedPtr objects_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr fov_marker_pub_;
 
@@ -408,7 +408,7 @@ private:
 
     void publish_objects(const std_msgs::msg::Header &header, double detection_angle_deg)
     {
-        auto object_array_msg = std::make_unique<detected_objects_msgs::msg::DetectedObjectArray>();
+        auto object_array_msg = std::make_unique<lidar_object_detection::msg::DetectedObjectArray>();
         object_array_msg->header = header;
 
         // First, filter and calculate distance to each tracked object's center for sorting
@@ -431,7 +431,7 @@ private:
         for (const auto &pair : sorted_tracks)
         {
             const auto &track = *pair.second;
-            detected_objects_msgs::msg::DetectedObject obj_msg;
+            lidar_object_detection::msg::DetectedObject obj_msg;
             obj_msg.header = header;
             obj_msg.object_id = track.object_id_;
             obj_msg.center.x = track.center_.x;
