@@ -1,0 +1,67 @@
+# ROS 2 build and install directories
+**/build/
+**/install/
+**/log/
+
+# Python Bytecode and Cache Files
+__pycache__/
+*.py[cod]
+
+# CMake Build Artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Colcon Cache and Configuration Files
+*.db
+.colcon/
+
+# Object Files and Compiled Libraries
+*.o
+*.so
+*.a
+*.out
+
+# Executable Binaries
+*.exe
+*.out
+
+# ROS 2 Package Artifacts
+ament_cmake_index/
+
+# System Files
+.DS_Store
+
+# Temporary Files
+*.swp
+*.bak
+*~
+
+# Virtual Environment Files
+*.venv
+
+# Bag Files
+bags/
+*.bag
+
+tmp/
+
+# Transformer Files
+*.pdf
+*.gv
+.pytest_cache
+.pytest_cache/*
+
+# Debug files
+*debug.txt
+
+# Secrets and Configuration Files
+*.env
+*.secrets
+
+# Test Results
+test_results/
+
+# Log Files
+*.log
