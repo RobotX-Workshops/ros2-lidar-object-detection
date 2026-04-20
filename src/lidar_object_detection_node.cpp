@@ -34,6 +34,7 @@ public:
     this->declare_parameter<double>(PARAM_MIN_OBJECT_WIDTH);
     this->declare_parameter<int>(PARAM_MIN_OBJECT_POINTS);
     this->declare_parameter<double>(PARAM_DETECTION_ANGLE);
+    this->declare_parameter<double>(PARAM_MARKER_LIFETIME_CYCLES);
 
     // Behavioral parameters (with defaults)
     this->declare_parameter<double>(PARAM_TRACKING_DIST_THRESHOLD, 0.3);
@@ -81,6 +82,7 @@ private:
   static const std::string PARAM_DETECTION_ANGLE;
   static const std::string PARAM_TRACKING_DIST_THRESHOLD;
   static const std::string PARAM_TRACKING_STALENESS_THRESHOLD;
+  static const std::string PARAM_MARKER_LIFETIME_CYCLES;
 
   // --- Member Variables ---
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
@@ -104,6 +106,11 @@ private:
   double detection_angle_deg_;
   double tracking_dist_threshold_;
   int tracking_staleness_threshold_;
+  double marker_lifetime_cycles_;
+
+  // Measured cycle state: updated every scan_callback and used to size marker lifetimes.
+  rclcpp::Time last_scan_stamp_;
+  rclcpp::Duration marker_lifetime_{0, 0};
 
   struct OrientedBoundingBox
   {
@@ -222,6 +229,20 @@ private:
 
   void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
   {
+    // Derive marker lifetime from the actual scan cycle time so it tracks the lidar rate.
+    // Prefer the measured inter-scan delta (authoritative); fall back to the driver-reported
+    // scan_time field on the very first callback when no previous stamp is available.
+    rclcpp::Time current_stamp(msg->header.stamp);
+    double cycle_time_sec = static_cast<double>(msg->scan_time);
+    if (last_scan_stamp_.nanoseconds() > 0) {
+      double delta = (current_stamp - last_scan_stamp_).seconds();
+      if (delta > 0.0) cycle_time_sec = delta;
+    }
+    last_scan_stamp_ = current_stamp;
+    if (cycle_time_sec > 0.0) {
+      marker_lifetime_ = rclcpp::Duration::from_seconds(cycle_time_sec * marker_lifetime_cycles_);
+    }
+
     // Use cached parameter values instead of reading each time
     double buffer_distance = max_object_width_;
 
@@ -453,6 +474,7 @@ private:
       box_marker.id = marker_id++;
       box_marker.type = visualization_msgs::msg::Marker::CUBE;
       box_marker.action = visualization_msgs::msg::Marker::ADD;
+      box_marker.lifetime = marker_lifetime_;
 
       // Set the pose of the marker. This is the center of the OBB.
       box_marker.pose.position = obb.center;
@@ -490,6 +512,7 @@ private:
       text_marker.id = marker_id++;
       text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
       text_marker.action = visualization_msgs::msg::Marker::ADD;
+      text_marker.lifetime = marker_lifetime_;
       text_marker.pose.position.x = track.center_.x;
       text_marker.pose.position.y = track.center_.y;
       text_marker.pose.position.z = 0.5;  // Offset text above the box
@@ -528,6 +551,7 @@ private:
     fov_marker.id = 0;
     fov_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
     fov_marker.action = visualization_msgs::msg::Marker::ADD;
+    fov_marker.lifetime = marker_lifetime_;
 
     fov_marker.pose.orientation.w = 1.0;
     fov_marker.scale.x = 0.05;  // Line width
@@ -572,6 +596,7 @@ private:
     tracking_marker.id = 1;
     tracking_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
     tracking_marker.action = visualization_msgs::msg::Marker::ADD;
+    tracking_marker.lifetime = marker_lifetime_;
 
     tracking_marker.pose.orientation.w = 1.0;
     tracking_marker.scale.x = 0.03;
@@ -633,6 +658,7 @@ private:
     tracking_dist_threshold_ = this->get_parameter(PARAM_TRACKING_DIST_THRESHOLD).as_double();
     tracking_staleness_threshold_ =
       this->get_parameter(PARAM_TRACKING_STALENESS_THRESHOLD).as_int();
+    marker_lifetime_cycles_ = this->get_parameter(PARAM_MARKER_LIFETIME_CYCLES).as_double();
 
     // Parameter validation
     if (max_object_width_ <= 0.0) {
@@ -652,6 +678,10 @@ private:
       RCLCPP_ERROR(this->get_logger(), "detection_angle_deg must be between 0 and 360 degrees");
       return;
     }
+    if (marker_lifetime_cycles_ <= 0.0) {
+      RCLCPP_ERROR(this->get_logger(), "marker_lifetime_cycles must be positive");
+      return;
+    }
 
     RCLCPP_INFO(
       this->get_logger(),
@@ -669,6 +699,8 @@ const std::string LidarObjectDetectionNode::PARAM_TRACKING_DIST_THRESHOLD =
   "tracking_dist_threshold_m";
 const std::string LidarObjectDetectionNode::PARAM_TRACKING_STALENESS_THRESHOLD =
   "tracking_staleness_threshold";
+const std::string LidarObjectDetectionNode::PARAM_MARKER_LIFETIME_CYCLES =
+  "marker_lifetime_cycles";
 
 int main(int argc, char ** argv)
 {
