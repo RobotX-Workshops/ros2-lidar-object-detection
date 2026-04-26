@@ -60,12 +60,10 @@ public:
     update_config();
 
     // --- Publishers ---
-    objects_pub_ = this->create_publisher<lidar_object_detection::msg::DetectedObjectArray>(
-      "detected_objects", 10);
-    marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "objects/visualization_markers", 10);
-    fov_marker_pub_ =
-      this->create_publisher<visualization_msgs::msg::Marker>("objects/fov_marker", 10);
+    objects_pub_ =
+      this->create_publisher<lidar_object_detection::msg::DetectedObjectArray>("detected", 10);
+    marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("markers", 10);
+    fov_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("fov_marker", 10);
 
     // --- Subscriber ---
     scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
