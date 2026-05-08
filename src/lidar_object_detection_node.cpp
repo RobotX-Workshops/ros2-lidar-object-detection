@@ -64,6 +64,8 @@ public:
       this->create_publisher<lidar_object_detection::msg::DetectedObjectArray>("detected", 10);
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("markers", 10);
     fov_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("fov_marker", 10);
+    tracking_zone_marker_pub_ =
+      this->create_publisher<visualization_msgs::msg::Marker>("tracking_zone_marker", 10);
 
     // --- Subscriber ---
     scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
@@ -87,6 +89,7 @@ private:
   rclcpp::Publisher<lidar_object_detection::msg::DetectedObjectArray>::SharedPtr objects_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr fov_marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr tracking_zone_marker_pub_;
 
   // Parameter callback handle
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
@@ -644,7 +647,7 @@ private:
       tracking_marker.points.push_back(left_boundary.front());
     }
 
-    fov_marker_pub_->publish(tracking_marker);
+    tracking_zone_marker_pub_->publish(tracking_marker);
   }
 
   void update_config()
