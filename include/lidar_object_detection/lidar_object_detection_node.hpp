@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -21,15 +24,12 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-using namespace std::chrono_literals;
-
 class LidarObjectDetectionNode : public rclcpp::Node
 {
 public:
   explicit LidarObjectDetectionNode(
     const rclcpp::NodeOptions & options = rclcpp::NodeOptions().enable_logger_service(true))
-  : Node("lidar_object_detection_node", options),
-    next_object_id_(0)
+  : Node("lidar_object_detection_node", options), next_object_id_(0)
   {
     // --- Parameters ---
     // Hardware-specific parameters (no defaults - must be configured)
@@ -54,9 +54,27 @@ public:
 
     // Set up parameter callback for runtime updates
     param_callback_handle_ = this->add_on_set_parameters_callback(
-      [this](const std::vector<rclcpp::Parameter> &) -> rcl_interfaces::msg::SetParametersResult {
+      [this](const std::vector<rclcpp::Parameter> & changed)
+        -> rcl_interfaces::msg::SetParametersResult {
         rcl_interfaces::msg::SetParametersResult result;
-        result.successful = true;
+        // Validate the would-be configuration (current values overlaid with the
+        // incoming ones) and reject it before anything is cached or applied.
+        auto value = [&](const std::string & name) {
+          for (const auto & p : changed) {
+            if (p.get_name() == name) {
+              return p;
+            }
+          }
+          return this->get_parameter(name);
+        };
+        result.reason = validate_config(
+          value(PARAM_MAX_OBJECT_WIDTH).as_double(), value(PARAM_MIN_OBJECT_WIDTH).as_double(),
+          value(PARAM_MIN_OBJECT_POINTS).as_int(), value(PARAM_DETECTION_ANGLE).as_double(),
+          value(PARAM_MARKER_LIFETIME_CYCLES).as_double());
+        result.successful = result.reason.empty();
+        if (!result.successful) {
+          return result;
+        }
 
         // Schedule delayed update to ensure parameters are set
         this->parameter_update_timer_ =
@@ -68,7 +86,8 @@ public:
         return result;
       });
 
-    // Initial parameter validation and configuration
+    // Initial parameter validation and configuration; an invalid startup
+    // configuration throws rather than running a node that detects nothing.
     update_config();
 
     // --- Publishers ---
@@ -88,16 +107,18 @@ public:
 
 private:
   // --- Parameter Constants ---
-  static const std::string PARAM_MAX_OBJECT_WIDTH;
-  static const std::string PARAM_MIN_OBJECT_WIDTH;
-  static const std::string PARAM_MIN_OBJECT_POINTS;
-  static const std::string PARAM_DETECTION_ANGLE;
-  static const std::string PARAM_TRACKING_DIST_THRESHOLD;
-  static const std::string PARAM_TRACKING_STALENESS_THRESHOLD;
-  static const std::string PARAM_MARKER_LIFETIME_CYCLES;
-  static const std::string PARAM_MARKERS_OBJECTS;
-  static const std::string PARAM_MARKERS_FOV;
-  static const std::string PARAM_MARKERS_TRACKING_ZONE;
+  // constexpr (not out-of-class std::string definitions) so the header can be
+  // included from more than one translation unit.
+  static constexpr const char * PARAM_MAX_OBJECT_WIDTH = "max_object_width_m";
+  static constexpr const char * PARAM_MIN_OBJECT_WIDTH = "min_object_width_m";
+  static constexpr const char * PARAM_MIN_OBJECT_POINTS = "min_amount_of_object_points";
+  static constexpr const char * PARAM_DETECTION_ANGLE = "detection_angle_deg";
+  static constexpr const char * PARAM_TRACKING_DIST_THRESHOLD = "tracking_dist_threshold_m";
+  static constexpr const char * PARAM_TRACKING_STALENESS_THRESHOLD = "tracking_staleness_threshold";
+  static constexpr const char * PARAM_MARKER_LIFETIME_CYCLES = "marker_lifetime_cycles";
+  static constexpr const char * PARAM_MARKERS_OBJECTS = "markers.objects";
+  static constexpr const char * PARAM_MARKERS_FOV = "markers.fov";
+  static constexpr const char * PARAM_MARKERS_TRACKING_ZONE = "markers.tracking_zone";
 
   // --- Member Variables ---
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
@@ -696,16 +717,56 @@ private:
     tracking_zone_marker_pub_->publish(tracking_marker);
   }
 
+  // Empty when the detection configuration is usable, else the reason it isn't.
+  static std::string validate_config(
+    double max_object_width, double min_object_width, int64_t min_object_points,
+    double detection_angle_deg, double marker_lifetime_cycles)
+  {
+    if (max_object_width <= 0.0) {
+      return "max_object_width_m must be positive";
+    }
+    if (min_object_width <= 0.0 || min_object_width >= max_object_width) {
+      return "min_object_width_m must be positive and less than max_object_width_m";
+    }
+    if (min_object_points <= 0) {
+      return "min_amount_of_object_points must be positive";
+    }
+    if (detection_angle_deg <= 0.0 || detection_angle_deg > 360.0) {
+      return "detection_angle_deg must be between 0 and 360 degrees";
+    }
+    if (marker_lifetime_cycles <= 0.0) {
+      return "marker_lifetime_cycles must be positive";
+    }
+    return "";
+  }
+
   void update_config()
   {
-    max_object_width_ = this->get_parameter(PARAM_MAX_OBJECT_WIDTH).as_double();
-    min_object_width_ = this->get_parameter(PARAM_MIN_OBJECT_WIDTH).as_double();
-    min_object_points_ = this->get_parameter(PARAM_MIN_OBJECT_POINTS).as_int();
-    detection_angle_deg_ = this->get_parameter(PARAM_DETECTION_ANGLE).as_double();
+    const double max_object_width = this->get_parameter(PARAM_MAX_OBJECT_WIDTH).as_double();
+    const double min_object_width = this->get_parameter(PARAM_MIN_OBJECT_WIDTH).as_double();
+    const int64_t min_object_points = this->get_parameter(PARAM_MIN_OBJECT_POINTS).as_int();
+    const double detection_angle_deg = this->get_parameter(PARAM_DETECTION_ANGLE).as_double();
+    const double marker_lifetime_cycles =
+      this->get_parameter(PARAM_MARKER_LIFETIME_CYCLES).as_double();
+
+    // The set-parameters callback rejects invalid runtime values, so this only
+    // fires for an invalid startup configuration.
+    const std::string error = validate_config(
+      max_object_width, min_object_width, min_object_points, detection_angle_deg,
+      marker_lifetime_cycles);
+    if (!error.empty()) {
+      RCLCPP_ERROR(this->get_logger(), "%s", error.c_str());
+      throw std::invalid_argument(error);
+    }
+
+    max_object_width_ = max_object_width;
+    min_object_width_ = min_object_width;
+    min_object_points_ = static_cast<int>(min_object_points);
+    detection_angle_deg_ = detection_angle_deg;
+    marker_lifetime_cycles_ = marker_lifetime_cycles;
     tracking_dist_threshold_ = this->get_parameter(PARAM_TRACKING_DIST_THRESHOLD).as_double();
     tracking_staleness_threshold_ =
       this->get_parameter(PARAM_TRACKING_STALENESS_THRESHOLD).as_int();
-    marker_lifetime_cycles_ = this->get_parameter(PARAM_MARKER_LIFETIME_CYCLES).as_double();
 
     // Marker visibility toggles — re-read in the existing reload path so the
     // parameter callback above flips them live.
@@ -713,46 +774,9 @@ private:
     markers_fov_ = this->get_parameter(PARAM_MARKERS_FOV).as_bool();
     markers_tracking_zone_ = this->get_parameter(PARAM_MARKERS_TRACKING_ZONE).as_bool();
 
-    // Parameter validation
-    if (max_object_width_ <= 0.0) {
-      RCLCPP_ERROR(this->get_logger(), "max_object_width_m must be positive");
-      return;
-    }
-    if (min_object_width_ <= 0.0 || min_object_width_ >= max_object_width_) {
-      RCLCPP_ERROR(
-        this->get_logger(), "min_object_width_m must be positive and less than max_object_width_m");
-      return;
-    }
-    if (min_object_points_ <= 0) {
-      RCLCPP_ERROR(this->get_logger(), "min_amount_of_object_points must be positive");
-      return;
-    }
-    if (detection_angle_deg_ <= 0.0 || detection_angle_deg_ > 360.0) {
-      RCLCPP_ERROR(this->get_logger(), "detection_angle_deg must be between 0 and 360 degrees");
-      return;
-    }
-    if (marker_lifetime_cycles_ <= 0.0) {
-      RCLCPP_ERROR(this->get_logger(), "marker_lifetime_cycles must be positive");
-      return;
-    }
-
     RCLCPP_INFO(
       this->get_logger(),
       "Configuration updated - Detection angle: %.1f°, Object width: %.2f-%.2fm",
       detection_angle_deg_, min_object_width_, max_object_width_);
   }
 };
-
-// --- Parameter Constants Definition ---
-const std::string LidarObjectDetectionNode::PARAM_MAX_OBJECT_WIDTH = "max_object_width_m";
-const std::string LidarObjectDetectionNode::PARAM_MIN_OBJECT_WIDTH = "min_object_width_m";
-const std::string LidarObjectDetectionNode::PARAM_MIN_OBJECT_POINTS = "min_amount_of_object_points";
-const std::string LidarObjectDetectionNode::PARAM_DETECTION_ANGLE = "detection_angle_deg";
-const std::string LidarObjectDetectionNode::PARAM_TRACKING_DIST_THRESHOLD =
-  "tracking_dist_threshold_m";
-const std::string LidarObjectDetectionNode::PARAM_TRACKING_STALENESS_THRESHOLD =
-  "tracking_staleness_threshold";
-const std::string LidarObjectDetectionNode::PARAM_MARKER_LIFETIME_CYCLES = "marker_lifetime_cycles";
-const std::string LidarObjectDetectionNode::PARAM_MARKERS_OBJECTS = "markers.objects";
-const std::string LidarObjectDetectionNode::PARAM_MARKERS_FOV = "markers.fov";
-const std::string LidarObjectDetectionNode::PARAM_MARKERS_TRACKING_ZONE = "markers.tracking_zone";

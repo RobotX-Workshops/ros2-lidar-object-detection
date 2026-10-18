@@ -10,6 +10,7 @@
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -126,6 +127,44 @@ TEST(LidarObjectDetectionMarkers, ThrowsWhenMarkerTogglesMissing)
   EXPECT_THROW(
     LidarObjectDetectionNode node(options),
     rclcpp::exceptions::UninitializedStaticallyTypedParameterException);
+}
+
+// An invalid startup configuration must fail node construction rather than
+// leave a node running that silently detects nothing.
+TEST(LidarObjectDetectionParams, ThrowsOnInvalidStartupConfig)
+{
+  auto params = base_params(true);
+  params.emplace_back("detection_angle_deg", 0.0);  // later override wins
+  rclcpp::NodeOptions options;
+  options.parameter_overrides(params);
+  EXPECT_THROW(LidarObjectDetectionNode node(options), std::invalid_argument);
+}
+
+// A runtime set of an invalid value is rejected with a reason and never
+// applied; a valid one is accepted.
+TEST(LidarObjectDetectionParams, RejectsInvalidRuntimeValues)
+{
+  rclcpp::NodeOptions options;
+  options.parameter_overrides(base_params(true));
+  auto node = std::make_shared<LidarObjectDetectionNode>(options);
+
+  auto bad_angle = node->set_parameter(rclcpp::Parameter("detection_angle_deg", 0.0));
+  EXPECT_FALSE(bad_angle.successful);
+  EXPECT_FALSE(bad_angle.reason.empty());
+  EXPECT_DOUBLE_EQ(node->get_parameter("detection_angle_deg").as_double(), 30.0);
+
+  // Invalid only in combination with the current max width (1.0).
+  auto bad_min = node->set_parameter(rclcpp::Parameter("min_object_width_m", 2.0));
+  EXPECT_FALSE(bad_min.successful);
+  EXPECT_DOUBLE_EQ(node->get_parameter("min_object_width_m").as_double(), 0.1);
+
+  // Valid together even though min >= the *current* max: checked as a set.
+  auto both = node->set_parameters_atomically(
+    {rclcpp::Parameter("max_object_width_m", 3.0), rclcpp::Parameter("min_object_width_m", 2.0)});
+  EXPECT_TRUE(both.successful) << both.reason;
+
+  auto ok = node->set_parameter(rclcpp::Parameter("detection_angle_deg", 45.0));
+  EXPECT_TRUE(ok.successful) << ok.reason;
 }
 
 // markers.*=false must suppress every marker stream while detection keeps
