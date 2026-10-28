@@ -252,7 +252,12 @@ private:
     double min_distance = 0.5;
     double angle_buffer_rad = std::atan(buffer_distance / min_distance);
     double angle_buffer_deg = angle_buffer_rad * 180.0 / M_PI;
-    double tracking_angle_deg = std::min(180.0, detection_angle_deg_ + 2 * angle_buffer_deg);
+    // Cap at the full circle, not 180: with a +/-90 deg detection arc a 180 cap left no
+    // clustering margin, so a wall beside the car was cut at the arc edge into a short
+    // piece that passed the width test and slid along with the car (a phantom moving
+    // object). Clustering past the edge keeps the wall in one cluster the width test
+    // rejects; the tracking/detection zone tests below still gate on the centre.
+    double tracking_angle_deg = std::min(360.0, detection_angle_deg_ + 2 * angle_buffer_deg);
 
     publish_fov_marker(msg->header, detection_angle_deg_, msg->range_max);
     publish_tracking_zone_marker(
