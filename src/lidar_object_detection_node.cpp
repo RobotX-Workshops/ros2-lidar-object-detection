@@ -393,7 +393,7 @@ private:
         track.update(candidates[best_candidate_idx], stamp);
         candidate_matched[best_candidate_idx] = true;
       } else {
-        track.increment_staleness();
+        track.coast(stamp);
       }
     }
 
@@ -422,6 +422,9 @@ private:
     // First, filter and calculate distance to each tracked object's center for sorting
     std::vector<std::pair<double, TrackedObject *>> sorted_tracks;
     for (auto & track : tracked_objects_) {
+      // A coasting (unmatched) track is published at its predicted position; one seen only
+      // once has no velocity to predict with, so it is held back until re-detected.
+      if (track.staleness_ > 0 && !track.has_velocity_) continue;
       // Only publish objects that are within the detection zone
       if (is_object_in_detection_zone(track.center_, detection_angle_deg)) {
         double dist = std::hypot(track.center_.x, track.center_.y);
