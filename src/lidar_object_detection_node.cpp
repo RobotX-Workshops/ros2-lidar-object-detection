@@ -252,7 +252,12 @@ private:
     double min_distance = 0.5;
     double angle_buffer_rad = std::atan(buffer_distance / min_distance);
     double angle_buffer_deg = angle_buffer_rad * 180.0 / M_PI;
-    double tracking_angle_deg = std::min(180.0, detection_angle_deg_ + 2 * angle_buffer_deg);
+    // Cap at the full circle, not 180: with a +/-90 deg detection arc a 180 cap left no
+    // clustering margin, so a wall beside the car was cut at the arc edge into a short
+    // piece that passed the width test and slid along with the car (a phantom moving
+    // object). Clustering past the edge keeps the wall in one cluster the width test
+    // rejects; the tracking/detection zone tests below still gate on the centre.
+    double tracking_angle_deg = std::min(360.0, detection_angle_deg_ + 2 * angle_buffer_deg);
 
     publish_fov_marker(msg->header, detection_angle_deg_, msg->range_max);
     publish_tracking_zone_marker(
@@ -388,7 +393,7 @@ private:
         track.update(candidates[best_candidate_idx], stamp);
         candidate_matched[best_candidate_idx] = true;
       } else {
-        track.increment_staleness();
+        track.coast(stamp);
       }
     }
 
@@ -417,6 +422,9 @@ private:
     // First, filter and calculate distance to each tracked object's center for sorting
     std::vector<std::pair<double, TrackedObject *>> sorted_tracks;
     for (auto & track : tracked_objects_) {
+      // A coasting (unmatched) track is published at its predicted position; one seen only
+      // once has no velocity to predict with, so it is held back until re-detected.
+      if (track.staleness_ > 0 && !track.has_velocity_) continue;
       // Only publish objects that are within the detection zone
       if (is_object_in_detection_zone(track.center_, detection_angle_deg)) {
         double dist = std::hypot(track.center_.x, track.center_.y);
