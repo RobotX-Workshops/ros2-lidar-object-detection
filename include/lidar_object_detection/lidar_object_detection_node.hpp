@@ -307,7 +307,8 @@ private:
     // piece that passed the width test and slid along with the car (a phantom moving
     // object). Clustering past the edge keeps the wall in one cluster the width test
     // rejects; the tracking/detection zone tests below still gate on the centre.
-    double tracking_angle_deg = std::min(360.0, detection_angle_deg_ + 2 * angle_buffer_deg);
+    double tracking_angle_deg =
+      std::min(360.0, detection_angle_deg_ + (2 * angle_buffer_deg));
 
     // Viz-only work below is gated by the markers.* toggles — the gate must
     // short-circuit the marker build (geometry loops), not just the publish.
@@ -354,14 +355,24 @@ private:
     double angle_rad = angle_deg * M_PI / 180.0;
     double min_angle_rad = -angle_rad / 2.0;
     double max_angle_rad = angle_rad / 2.0;
+    // A full-circle arc takes every beam. The range test below cannot be used for it: a
+    // scan that starts at -pi stores float(-pi) in angle_min, and float(-pi) is ~9e-8
+    // BELOW the double -M_PI, so the first beam fails `scan_angle >= min_angle_rad` and is
+    // dropped -- exactly the beam that completes an object straddling the seam, which can
+    // push it under min_object_points_ before merge_seam_clusters ever sees it.
+    const bool full_circle = angle_deg >= 360.0;
 
     for (size_t i = 0; i < msg->ranges.size(); ++i) {
-      float scan_angle = msg->angle_min + i * msg->angle_increment;
-      if (scan_angle >= min_angle_rad && scan_angle <= max_angle_rad) {
-        float range = msg->ranges[i];
-        if (std::isfinite(range)) {
-          points.push_back({range * std::cos(scan_angle), range * std::sin(scan_angle)});
-        }
+      float scan_angle = msg->angle_min + (i * msg->angle_increment);
+      if (!std::isfinite(scan_angle)) {
+        continue;
+      }
+      if (!full_circle && (scan_angle < min_angle_rad || scan_angle > max_angle_rad)) {
+        continue;
+      }
+      float range = msg->ranges[i];
+      if (std::isfinite(range)) {
+        points.push_back({range * std::cos(scan_angle), range * std::sin(scan_angle)});
       }
     }
     return points;
@@ -405,17 +416,18 @@ private:
       if (cluster.size() < static_cast<size_t>(min_points)) {
         continue;
       }
-      double object_width =
-        std::hypot(cluster.back().x - cluster.front().x, cluster.back().y - cluster.front().y);
-      if (object_width < min_width || object_width > max_width) {
-        continue;
-      }
-
-      // Check diameter constraint more thoroughly
+      // Width is the cluster's widest pair of points, not the distance between its two
+      // ends. A cluster whose points run across the scan seam has its ends either side of
+      // the seam -- physically neighbours -- so end-to-end measures the wrap gap (a few
+      // centimetres) and rejects a perfectly ordinary object sitting on the seam.
+      double object_width = 0.0;
       bool valid_diameter = true;
       for (size_t i = 0; i < cluster.size(); ++i) {
         for (size_t j = i + 1; j < cluster.size(); ++j) {
-          if (std::hypot(cluster[i].x - cluster[j].x, cluster[i].y - cluster[j].y) > max_width) {
+          const double span =
+            std::hypot(cluster[i].x - cluster[j].x, cluster[i].y - cluster[j].y);
+          object_width = std::max(object_width, span);
+          if (span > max_width) {
             valid_diameter = false;
             break;
           }
@@ -423,6 +435,9 @@ private:
         if (!valid_diameter) {
           break;
         }
+      }
+      if (object_width < min_width || object_width > max_width) {
+        continue;
       }
 
       if (valid_diameter) {
