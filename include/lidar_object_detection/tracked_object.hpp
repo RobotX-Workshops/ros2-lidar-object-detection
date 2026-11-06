@@ -27,7 +27,12 @@ class TrackedObject
 {
 public:
   TrackedObject(uint32_t id, const ObjectCandidate & candidate, const rclcpp::Time & time)
-  : object_id_(id), center_(candidate.center), last_update_time_(time), staleness_(0)
+  : object_id_(id),
+    center_(candidate.center),
+    last_update_time_(time),
+    staleness_(0),
+    observed_center_(candidate.center),
+    center_time_(time)
   {
     velocity_.x = 0;
     velocity_.y = 0;
@@ -39,19 +44,46 @@ public:
 
   void update(const ObjectCandidate & candidate, const rclcpp::Time & time)
   {
-    double dt = (time - last_update_time_).seconds();
-    if (dt > 1e-6) {  // Avoid division by zero
-      velocity_.x = (candidate.center.x - center_.x) / dt;
-      velocity_.y = (candidate.center.y - center_.y) / dt;
+    // Difference against the last *observation*, over the whole interval since it, never
+    // against a coasted center_: that is a prediction, and its error divided by one scan
+    // interval can even flip the sign of the estimate when the object changed speed while
+    // unseen.
+    const double elapsed_s = (time - last_update_time_).seconds();
+    if (elapsed_s > 1e-6) {  // Avoid division by zero
+      velocity_.x = (candidate.center.x - observed_center_.x) / elapsed_s;
+      velocity_.y = (candidate.center.y - observed_center_.y) / elapsed_s;
+      has_velocity_ = true;
     }
 
+    observed_center_ = candidate.center;
     center_ = candidate.center;
     bounding_box_ = calculate_convex_hull(candidate.points);
     last_update_time_ = time;
+    center_time_ = time;
     staleness_ = 0;
   }
 
-  void increment_staleness() { staleness_++; }
+  // Unmatched this scan: keep the track for re-association. With `predict` it coasts at
+  // its last (sensor-frame, i.e. sensor-relative) velocity — frozen in the sensor frame a
+  // track rides along with a moving sensor and looks like a moving object to every
+  // consumer; coasted, a static wall stays static in the world. Without `predict` it holds
+  // its last position (the behaviour for a static sensor, or when consumers prefer it).
+  void mark_missed(const rclcpp::Time & time, bool predict)
+  {
+    staleness_++;
+    if (!predict || !has_velocity_) return;
+    const double dt = (time - center_time_).seconds();
+    if (dt <= 0.0) return;
+    const double dx = velocity_.x * dt;
+    const double dy = velocity_.y * dt;
+    center_.x += dx;
+    center_.y += dy;
+    for (auto & p : bounding_box_) {
+      p.x += static_cast<float>(dx);
+      p.y += static_cast<float>(dy);
+    }
+    center_time_ = time;
+  }
 
   // Public member variables for easy access
   uint32_t object_id_;
@@ -60,8 +92,14 @@ public:
   std::vector<geometry_msgs::msg::Point32> bounding_box_;
   rclcpp::Time last_update_time_;
   int staleness_;
+  // Seen at least twice: velocity_ is an estimate (a coasting track without one is not
+  // published, its position is unknown).
+  bool has_velocity_{false};
 
 private:
+  Point2D observed_center_;   // the last measured center (center_ may be a prediction)
+  rclcpp::Time center_time_;  // the time center_ refers to (last sighting or coast step)
+
   // Calculates the convex hull of a set of 2D points using the Monotone Chain algorithm.
   // This is used to create a tight bounding polygon for visualization and analysis.
   std::vector<geometry_msgs::msg::Point32> calculate_convex_hull(

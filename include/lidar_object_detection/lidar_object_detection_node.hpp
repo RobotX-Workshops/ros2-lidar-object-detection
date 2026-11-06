@@ -12,6 +12,7 @@
 
 #include "lidar_object_detection/msg/detected_object.hpp"
 #include "lidar_object_detection/msg/detected_object_array.hpp"
+#include "lidar_object_detection/scan_seam.hpp"
 #include "lidar_object_detection/tracked_object.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
@@ -51,6 +52,10 @@ public:
     // Behavioral parameters (with defaults)
     this->declare_parameter<double>(PARAM_TRACKING_DIST_THRESHOLD, 0.3);
     this->declare_parameter<int>(PARAM_TRACKING_STALENESS_THRESHOLD, 5);
+    // What an unmatched track does until it is re-detected or goes stale: true = coast
+    // at its last relative velocity (right for a sensor on a moving platform), false =
+    // hold its last position (the pre-coasting behaviour, fine for a static sensor).
+    this->declare_parameter<bool>(PARAM_TRACKING_COAST_UNMATCHED, true);
 
     // Set up parameter callback for runtime updates
     param_callback_handle_ = this->add_on_set_parameters_callback(
@@ -115,6 +120,7 @@ private:
   static constexpr const char * PARAM_DETECTION_ANGLE = "detection_angle_deg";
   static constexpr const char * PARAM_TRACKING_DIST_THRESHOLD = "tracking_dist_threshold_m";
   static constexpr const char * PARAM_TRACKING_STALENESS_THRESHOLD = "tracking_staleness_threshold";
+  static constexpr const char * PARAM_TRACKING_COAST_UNMATCHED = "tracking_coast_unmatched";
   static constexpr const char * PARAM_MARKER_LIFETIME_CYCLES = "marker_lifetime_cycles";
   static constexpr const char * PARAM_MARKERS_OBJECTS = "markers.objects";
   static constexpr const char * PARAM_MARKERS_FOV = "markers.fov";
@@ -143,6 +149,7 @@ private:
   double detection_angle_deg_;
   double tracking_dist_threshold_;
   int tracking_staleness_threshold_;
+  bool tracking_coast_unmatched_{true};
   double marker_lifetime_cycles_;
   bool markers_objects_{true};
   bool markers_fov_{true};
@@ -295,7 +302,13 @@ private:
     double min_distance = 0.5;
     double angle_buffer_rad = std::atan(buffer_distance / min_distance);
     double angle_buffer_deg = angle_buffer_rad * 180.0 / M_PI;
-    double tracking_angle_deg = std::min(180.0, detection_angle_deg_ + 2 * angle_buffer_deg);
+    // Cap at the full circle, not 180: with a +/-90 deg detection arc a 180 cap left no
+    // clustering margin, so a wall beside the car was cut at the arc edge into a short
+    // piece that passed the width test and slid along with the car (a phantom moving
+    // object). Clustering past the edge keeps the wall in one cluster the width test
+    // rejects; the tracking/detection zone tests below still gate on the centre.
+    double tracking_angle_deg =
+      std::min(360.0, detection_angle_deg_ + (2 * angle_buffer_deg));
 
     // Viz-only work below is gated by the markers.* toggles — the gate must
     // short-circuit the marker build (geometry loops), not just the publish.
@@ -312,6 +325,9 @@ private:
     // Use calculated tracking angle for initial scan processing
     auto points = scan_to_points(msg, tracking_angle_deg);
     auto clusters = group_points(points, max_object_width_);
+    if (tracking_angle_deg >= 360.0 && lidar_object_detection::scan_covers_full_circle(*msg)) {
+      lidar_object_detection::merge_seam_clusters(clusters, max_object_width_);
+    }
     auto candidates =
       filter_clusters(clusters, min_object_points_, min_object_width_, max_object_width_);
 
@@ -339,14 +355,24 @@ private:
     double angle_rad = angle_deg * M_PI / 180.0;
     double min_angle_rad = -angle_rad / 2.0;
     double max_angle_rad = angle_rad / 2.0;
+    // A full-circle arc takes every beam. The range test below cannot be used for it: a
+    // scan that starts at -pi stores float(-pi) in angle_min, and float(-pi) is ~9e-8
+    // BELOW the double -M_PI, so the first beam fails `scan_angle >= min_angle_rad` and is
+    // dropped -- exactly the beam that completes an object straddling the seam, which can
+    // push it under min_object_points_ before merge_seam_clusters ever sees it.
+    const bool full_circle = angle_deg >= 360.0;
 
     for (size_t i = 0; i < msg->ranges.size(); ++i) {
-      float scan_angle = msg->angle_min + i * msg->angle_increment;
-      if (scan_angle >= min_angle_rad && scan_angle <= max_angle_rad) {
-        float range = msg->ranges[i];
-        if (std::isfinite(range)) {
-          points.push_back({range * std::cos(scan_angle), range * std::sin(scan_angle)});
-        }
+      float scan_angle = msg->angle_min + (i * msg->angle_increment);
+      if (!std::isfinite(scan_angle)) {
+        continue;
+      }
+      if (!full_circle && (scan_angle < min_angle_rad || scan_angle > max_angle_rad)) {
+        continue;
+      }
+      float range = msg->ranges[i];
+      if (std::isfinite(range)) {
+        points.push_back({range * std::cos(scan_angle), range * std::sin(scan_angle)});
       }
     }
     return points;
@@ -390,17 +416,18 @@ private:
       if (cluster.size() < static_cast<size_t>(min_points)) {
         continue;
       }
-      double object_width =
-        std::hypot(cluster.back().x - cluster.front().x, cluster.back().y - cluster.front().y);
-      if (object_width < min_width || object_width > max_width) {
-        continue;
-      }
-
-      // Check diameter constraint more thoroughly
+      // Width is the cluster's widest pair of points, not the distance between its two
+      // ends. A cluster whose points run across the scan seam has its ends either side of
+      // the seam -- physically neighbours -- so end-to-end measures the wrap gap (a few
+      // centimetres) and rejects a perfectly ordinary object sitting on the seam.
+      double object_width = 0.0;
       bool valid_diameter = true;
       for (size_t i = 0; i < cluster.size(); ++i) {
         for (size_t j = i + 1; j < cluster.size(); ++j) {
-          if (std::hypot(cluster[i].x - cluster[j].x, cluster[i].y - cluster[j].y) > max_width) {
+          const double span =
+            std::hypot(cluster[i].x - cluster[j].x, cluster[i].y - cluster[j].y);
+          object_width = std::max(object_width, span);
+          if (span > max_width) {
             valid_diameter = false;
             break;
           }
@@ -408,6 +435,9 @@ private:
         if (!valid_diameter) {
           break;
         }
+      }
+      if (object_width < min_width || object_width > max_width) {
+        continue;
       }
 
       if (valid_diameter) {
@@ -453,7 +483,7 @@ private:
         track.update(candidates[best_candidate_idx], stamp);
         candidate_matched[best_candidate_idx] = true;
       } else {
-        track.increment_staleness();
+        track.mark_missed(stamp, tracking_coast_unmatched_);
       }
     }
 
@@ -482,6 +512,10 @@ private:
     // First, filter and calculate distance to each tracked object's center for sorting
     std::vector<std::pair<double, TrackedObject *>> sorted_tracks;
     for (auto & track : tracked_objects_) {
+      // A coasting (unmatched) track is published at its predicted position; one seen only
+      // once has no velocity to predict with, so it is held back until re-detected. With
+      // coasting off, an unmatched track is published where it was last seen, as before.
+      if (tracking_coast_unmatched_ && track.staleness_ > 0 && !track.has_velocity_) continue;
       // Only publish objects that are within the detection zone
       if (is_object_in_detection_zone(track.center_, detection_angle_deg)) {
         double dist = std::hypot(track.center_.x, track.center_.y);
@@ -767,6 +801,7 @@ private:
     tracking_dist_threshold_ = this->get_parameter(PARAM_TRACKING_DIST_THRESHOLD).as_double();
     tracking_staleness_threshold_ =
       this->get_parameter(PARAM_TRACKING_STALENESS_THRESHOLD).as_int();
+    tracking_coast_unmatched_ = this->get_parameter(PARAM_TRACKING_COAST_UNMATCHED).as_bool();
 
     // Marker visibility toggles — re-read in the existing reload path so the
     // parameter callback above flips them live.
