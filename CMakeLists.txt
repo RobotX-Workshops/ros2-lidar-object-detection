@@ -68,7 +68,30 @@ if(BUILD_TESTING)
   # comment the line when this package is in a git repo and when
   # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
+  # clang-format is the primary C++ formatter (repo .clang-format; the same
+  # setup the main tron-roboracer repo uses for this package) — skip
+  # uncrustify, whose default style conflicts with it.
+  set(AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+  # Node-level gtest: the class is header-only, so the test includes it
+  # directly and exercises the marker toggles end to end with synthetic scans.
+  ament_add_gtest(test_lidar_object_detection test/test_lidar_object_detection.cpp)
+  ament_target_dependencies(
+    test_lidar_object_detection
+    rclcpp
+    sensor_msgs
+    visualization_msgs
+    tf2
+    tf2_geometry_msgs
+  )
+  # Same-package message types: link the generated typesupport directly.
+  rosidl_get_typesupport_target(lidar_object_detection_cpp lidar_object_detection
+    "rosidl_typesupport_cpp"
+  )
+  target_link_libraries(test_lidar_object_detection "${lidar_object_detection_cpp}")
+  target_include_directories(test_lidar_object_detection PRIVATE include)
 endif()
 
 ament_export_dependencies(rosidl_default_runtime)
