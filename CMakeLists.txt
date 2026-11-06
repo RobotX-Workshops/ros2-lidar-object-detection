@@ -92,6 +92,11 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_lidar_object_detection "${lidar_object_detection_cpp}")
   target_include_directories(test_lidar_object_detection PRIVATE include)
+
+  # Pure-logic gtest: tracker velocity / miss handling and the full-circle seam merge.
+  ament_add_gtest(test_tracking_and_seam test/test_tracking_and_seam.cpp)
+  ament_target_dependencies(test_tracking_and_seam rclcpp sensor_msgs geometry_msgs)
+  target_include_directories(test_tracking_and_seam PRIVATE include)
 endif()
 
 ament_export_dependencies(rosidl_default_runtime)

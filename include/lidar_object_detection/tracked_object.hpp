@@ -31,6 +31,7 @@ public:
     center_(candidate.center),
     last_update_time_(time),
     staleness_(0),
+    observed_center_(candidate.center),
     center_time_(time)
   {
     velocity_.x = 0;
@@ -43,14 +44,18 @@ public:
 
   void update(const ObjectCandidate & candidate, const rclcpp::Time & time)
   {
-    // center_ may be a coasted prediction; difference against the time it refers to.
-    double dt = (time - center_time_).seconds();
-    if (dt > 1e-6) {  // Avoid division by zero
-      velocity_.x = (candidate.center.x - center_.x) / dt;
-      velocity_.y = (candidate.center.y - center_.y) / dt;
+    // Difference against the last *observation*, over the whole interval since it, never
+    // against a coasted center_: that is a prediction, and its error divided by one scan
+    // interval can even flip the sign of the estimate when the object changed speed while
+    // unseen.
+    const double elapsed_s = (time - last_update_time_).seconds();
+    if (elapsed_s > 1e-6) {  // Avoid division by zero
+      velocity_.x = (candidate.center.x - observed_center_.x) / elapsed_s;
+      velocity_.y = (candidate.center.y - observed_center_.y) / elapsed_s;
       has_velocity_ = true;
     }
 
+    observed_center_ = candidate.center;
     center_ = candidate.center;
     bounding_box_ = calculate_convex_hull(candidate.points);
     last_update_time_ = time;
@@ -58,14 +63,15 @@ public:
     staleness_ = 0;
   }
 
-  // Unmatched this scan: keep the track for re-association and coast it at its last
-  // (sensor-frame, i.e. ego-relative) velocity. Frozen in the sensor frame it would ride
-  // along with the car and look like a moving object to every consumer; coasted, a
-  // static wall stays static in the world and a car ahead at our speed stays ahead.
-  void coast(const rclcpp::Time & time)
+  // Unmatched this scan: keep the track for re-association. With `predict` it coasts at
+  // its last (sensor-frame, i.e. sensor-relative) velocity — frozen in the sensor frame a
+  // track rides along with a moving sensor and looks like a moving object to every
+  // consumer; coasted, a static wall stays static in the world. Without `predict` it holds
+  // its last position (the behaviour for a static sensor, or when consumers prefer it).
+  void mark_missed(const rclcpp::Time & time, bool predict)
   {
     staleness_++;
-    if (!has_velocity_) return;
+    if (!predict || !has_velocity_) return;
     const double dt = (time - center_time_).seconds();
     if (dt <= 0.0) return;
     const double dx = velocity_.x * dt;
@@ -91,6 +97,7 @@ public:
   bool has_velocity_{false};
 
 private:
+  Point2D observed_center_;   // the last measured center (center_ may be a prediction)
   rclcpp::Time center_time_;  // the time center_ refers to (last sighting or coast step)
 
   // Calculates the convex hull of a set of 2D points using the Monotone Chain algorithm.

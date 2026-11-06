@@ -12,6 +12,7 @@
 
 #include "lidar_object_detection/msg/detected_object.hpp"
 #include "lidar_object_detection/msg/detected_object_array.hpp"
+#include "lidar_object_detection/scan_seam.hpp"
 #include "lidar_object_detection/tracked_object.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
@@ -51,6 +52,10 @@ public:
     // Behavioral parameters (with defaults)
     this->declare_parameter<double>(PARAM_TRACKING_DIST_THRESHOLD, 0.3);
     this->declare_parameter<int>(PARAM_TRACKING_STALENESS_THRESHOLD, 5);
+    // What an unmatched track does until it is re-detected or goes stale: true = coast
+    // at its last relative velocity (right for a sensor on a moving platform), false =
+    // hold its last position (the pre-coasting behaviour, fine for a static sensor).
+    this->declare_parameter<bool>(PARAM_TRACKING_COAST_UNMATCHED, true);
 
     // Set up parameter callback for runtime updates
     param_callback_handle_ = this->add_on_set_parameters_callback(
@@ -115,6 +120,7 @@ private:
   static constexpr const char * PARAM_DETECTION_ANGLE = "detection_angle_deg";
   static constexpr const char * PARAM_TRACKING_DIST_THRESHOLD = "tracking_dist_threshold_m";
   static constexpr const char * PARAM_TRACKING_STALENESS_THRESHOLD = "tracking_staleness_threshold";
+  static constexpr const char * PARAM_TRACKING_COAST_UNMATCHED = "tracking_coast_unmatched";
   static constexpr const char * PARAM_MARKER_LIFETIME_CYCLES = "marker_lifetime_cycles";
   static constexpr const char * PARAM_MARKERS_OBJECTS = "markers.objects";
   static constexpr const char * PARAM_MARKERS_FOV = "markers.fov";
@@ -143,6 +149,7 @@ private:
   double detection_angle_deg_;
   double tracking_dist_threshold_;
   int tracking_staleness_threshold_;
+  bool tracking_coast_unmatched_{true};
   double marker_lifetime_cycles_;
   bool markers_objects_{true};
   bool markers_fov_{true};
@@ -317,6 +324,9 @@ private:
     // Use calculated tracking angle for initial scan processing
     auto points = scan_to_points(msg, tracking_angle_deg);
     auto clusters = group_points(points, max_object_width_);
+    if (tracking_angle_deg >= 360.0 && lidar_object_detection::scan_covers_full_circle(*msg)) {
+      lidar_object_detection::merge_seam_clusters(clusters, max_object_width_);
+    }
     auto candidates =
       filter_clusters(clusters, min_object_points_, min_object_width_, max_object_width_);
 
@@ -458,7 +468,7 @@ private:
         track.update(candidates[best_candidate_idx], stamp);
         candidate_matched[best_candidate_idx] = true;
       } else {
-        track.coast(stamp);
+        track.mark_missed(stamp, tracking_coast_unmatched_);
       }
     }
 
@@ -488,8 +498,9 @@ private:
     std::vector<std::pair<double, TrackedObject *>> sorted_tracks;
     for (auto & track : tracked_objects_) {
       // A coasting (unmatched) track is published at its predicted position; one seen only
-      // once has no velocity to predict with, so it is held back until re-detected.
-      if (track.staleness_ > 0 && !track.has_velocity_) continue;
+      // once has no velocity to predict with, so it is held back until re-detected. With
+      // coasting off, an unmatched track is published where it was last seen, as before.
+      if (tracking_coast_unmatched_ && track.staleness_ > 0 && !track.has_velocity_) continue;
       // Only publish objects that are within the detection zone
       if (is_object_in_detection_zone(track.center_, detection_angle_deg)) {
         double dist = std::hypot(track.center_.x, track.center_.y);
@@ -775,6 +786,7 @@ private:
     tracking_dist_threshold_ = this->get_parameter(PARAM_TRACKING_DIST_THRESHOLD).as_double();
     tracking_staleness_threshold_ =
       this->get_parameter(PARAM_TRACKING_STALENESS_THRESHOLD).as_int();
+    tracking_coast_unmatched_ = this->get_parameter(PARAM_TRACKING_COAST_UNMATCHED).as_bool();
 
     // Marker visibility toggles — re-read in the existing reload path so the
     // parameter callback above flips them live.
